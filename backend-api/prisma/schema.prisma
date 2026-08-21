@@ -1,0 +1,107 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  PELERIN
+  ERUDIT
+  ADMIN
+}
+
+model User {
+  id                    String      @id @default(uuid())
+  phone                 String      @unique
+  fullName              String?
+  password              String
+  role                  Role        @default(PELERIN)
+  subscriptionExpiresAt DateTime?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  conversations         Conversation[]
+  payments              Payment[]
+  authoredDocuments     Document[]           @relation("AuthorScholar")
+  answeredQuestions     UnansweredQuestion[] @relation("AnsweredByScholar")
+
+  @@map("users")
+}
+
+model Conversation {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String    @default("Nouvelle conversation")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  messages  Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String       @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         String       // "USER" | "AI"
+  content        String       @db.Text
+  sources        Json?        // Références, citations, nom de l'érudit et livre
+  audioUrl       String?
+  createdAt      DateTime     @default(now())
+
+  @@map("messages")
+}
+
+model Payment {
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paydunyaToken String    @unique
+  amount        Float
+  status        String    @default("PENDING") // "PENDING", "COMPLETED", "FAILED", "CANCELLED"
+  provider      String?   // "WAVE", "ORANGE_MONEY", "FREE_MONEY", "CARD"
+  durationDays  Int       @default(30)
+  invoiceUrl    String?
+  receiptUrl    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("payments")
+}
+
+model Document {
+  id            String   @id @default(uuid())
+  title         String
+  authorScholar String
+  category      String?
+  type          String   @default("TEXT") // "PDF", "TEXT", "AUDIO_TRANSCRIPT"
+  content       String   @db.Text
+  fileUrl       String?
+  isPublished   Boolean  @default(false)
+  createdById   String
+  createdBy     User     @relation("AuthorScholar", fields: [createdById], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("documents")
+}
+
+model UnansweredQuestion {
+  id             String    @id @default(uuid())
+  rawQuestion    String    @db.Text
+  language       String    @default("fr") // "fr" | "wo"
+  frequencyCount Int       @default(1)
+  status         String    @default("PENDING") // "PENDING", "ANSWERED", "DISCARDED"
+  officialAnswer String?   @db.Text
+  answeredById   String?
+  answeredBy     User?     @relation("AnsweredByScholar", fields: [answeredById], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@map("unanswered_questions")
+}
