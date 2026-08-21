@@ -1,0 +1,8 @@
+{
+  "name": "Zawiya Tivaouane Admin - Enseignements Seydi El Hadji Malick Sy",
+  "description": "Interface d'administration et de validation théologique pour le système RAG des enseignements de Seydi El Hadji Malick Sy (RTA) à Tivaouane.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
