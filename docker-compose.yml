@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cezat-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cezat_secure_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-cezat_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - cezat-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-cezat_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend Principal NestJS (Auth, Chat History, PayDunya, Érudits)
+  backend-api:
+    build:
+      context: ./backend-api
+      dockerfile: Dockerfile
+    container_name: cezat-backend-api
+    restart: always
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-cezat_secure_pass_2026}@postgres:5432/${POSTGRES_DB:-cezat_db}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-cezat_super_secret_jwt_key_2026}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30d}
+      PAYDUNYA_MASTER_KEY: ${PAYDUNYA_MASTER_KEY:-test_master_key}
+      PAYDUNYA_PRIVATE_KEY: ${PAYDUNYA_PRIVATE_KEY:-test_private_key}
+      PAYDUNYA_PUBLIC_KEY: ${PAYDUNYA_PUBLIC_KEY:-test_public_key}
+      PAYDUNYA_TOKEN: ${PAYDUNYA_TOKEN:-test_token}
+      PAYDUNYA_MODE: ${PAYDUNYA_MODE:-test}
+      AI_SERVICE_URL: http://ai-service:8000
+      INTERNAL_AI_SECRET: ${INTERNAL_AI_SECRET:-cezat_internal_ai_token_2026}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cezat-network
+
+  # Microservice IA Python / FastAPI (RAG, Gemini, Vector Search, Wolof)
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: cezat-ai-service
+    restart: always
+    environment:
+      PORT: 8000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-cezat_secure_pass_2026}@postgres:5432/${POSTGRES_DB:-cezat_db}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-your_gemini_api_key_here}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      INTERNAL_AI_SECRET: ${INTERNAL_AI_SECRET:-cezat_internal_ai_token_2026}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.72}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cezat-network
+
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  cezat-network:
+    driver: bridge
