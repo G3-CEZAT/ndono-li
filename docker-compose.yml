@@ -62,6 +62,8 @@ services:
       SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD:-0.72}
     ports:
       - "8000:8000"
+    volumes:
+      - ./ai-service:/app
     depends_on:
       postgres:
         condition: service_healthy

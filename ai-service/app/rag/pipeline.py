@@ -11,6 +11,34 @@ logger = logging.getLogger(__name__)
 if settings.GEMINI_API_KEY:
     genai.configure(api_key=settings.GEMINI_API_KEY)
 
+_cached_generative_model: Optional[str] = None
+
+def get_best_generative_model() -> str:
+    global _cached_generative_model
+    if _cached_generative_model:
+        return _cached_generative_model
+
+    if not settings.GEMINI_API_KEY:
+        return "gemini-1.5-flash"
+
+    try:
+        available_models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # Préférer flash ou pro
+        preferred = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro"]
+        for p in preferred:
+            if p in available_models or f"models/{p}" in available_models:
+                _cached_generative_model = p
+                logger.info(f"Modèle génératif Gemini sélectionné: {_cached_generative_model}")
+                return _cached_generative_model
+        if available_models:
+            _cached_generative_model = available_models[0]
+            return _cached_generative_model
+    except Exception as e:
+        logger.warning(f"Impossible de lister les modèles génératifs: {e}")
+
+    _cached_generative_model = settings.GEMINI_MODEL.replace("models/", "")
+    return _cached_generative_model
+
 SYSTEM_PROMPT = """Tu es l'assistant officiel de la plateforme CEZAT, dédié à la diffusion fidèle et certifiée des enseignements religieux et spirituels de la communauté.
 
 RÈGLES STRICTES ET NON NÉGOCIABLES :
@@ -27,7 +55,8 @@ def analyze_and_expand_query(question: str) -> Dict[str, str]:
         return {"expanded_query": question, "detected_language": "fr"}
 
     try:
-        model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        model_name = get_best_generative_model()
+        model = genai.GenerativeModel(model_name)
         prompt = f"""Analyse cette question d'un fidèle : "{question}".
 Tâche :
 1. Détecte la langue principale (français = 'fr', wolof = 'wo').
@@ -58,8 +87,6 @@ def search_similar_chunks(db: Session, query: str, top_k: int = 4) -> List[Dict[
     """Recherche les chunks les plus similaires dans PostgreSQL avec pgvector."""
     query_vector = generate_query_embedding(query)
     
-    # Cosine distance dans pgvector : distance comprise entre 0 (identique) et 2
-    # Score de similarité = 1 - cosine_distance
     chunks = (
         db.query(
             DocumentChunkModel,
@@ -99,7 +126,7 @@ def run_rag_pipeline(
     # 2. Recherche vectorielle dans la base des érudits
     chunks = search_similar_chunks(db, expanded_query, top_k=4)
 
-    # 3. Filtrage par seuil de similarité stricte (tolérance zéro hallucination)
+    # 3. Filtrage par seuil de similarité stricte
     threshold = settings.SIMILARITY_THRESHOLD
     relevant_chunks = [c for c in chunks if c["score"] >= threshold]
 
@@ -143,10 +170,9 @@ LANGUE DE RÉPONSE REQUISE : {'Wolof' if detected_lang == 'wo' else 'Français'}
 Formule ta réponse certifiée avec bienveillance, en citant les sources et érudits pertinents."""
 
     if not settings.GEMINI_API_KEY:
-        # Fallback de simulation si clé non encore configurée
         sample_source = relevant_chunks[0]
         return {
-            "answer": f"[Mode Simulation RAG - Clé Gemini requise] D'après l'enseignement '{sample_source['title']}' par {sample_source['author_scholar']} : {sample_source['content'][:250]}...",
+            "answer": f"[Mode Simulation RAG] D'après '{sample_source['title']}' par {sample_source['author_scholar']} : {sample_source['content'][:250]}...",
             "isFound": True,
             "sources": [
                 {
@@ -161,7 +187,8 @@ Formule ta réponse certifiée avec bienveillance, en citant les sources et éru
         }
 
     try:
-        model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        model_name = get_best_generative_model()
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         answer_text = response.text.strip()
 
