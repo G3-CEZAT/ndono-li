@@ -12,58 +12,45 @@ if settings.GEMINI_API_KEY:
 _cached_embedding_model: Optional[str] = None
 
 def get_best_embedding_model() -> str:
-    global _cached_embedding_model
-    if _cached_embedding_model:
-        return _cached_embedding_model
+    return settings.EMBEDDING_MODEL or "models/text-embedding-004"
 
-    if not settings.GEMINI_API_KEY:
-        return "models/gemini-embedding-001"
-
-    candidates = ["models/gemini-embedding-001", "models/gemini-embedding-2", "models/gemini-embedding-2-preview"]
-    try:
-        available_models = [m.name for m in genai.list_models() if 'embedContent' in m.supported_generation_methods]
-        for c in candidates:
-            if c in available_models:
-                _cached_embedding_model = c
-                logger.info(f"Modèle d'embedding Gemini sélectionné: {_cached_embedding_model}")
-                return _cached_embedding_model
-        if available_models:
-            _cached_embedding_model = available_models[0]
-            return _cached_embedding_model
-    except Exception as e:
-        logger.warning(f"Impossible de lister les modèles d'embedding: {e}")
-
-    _cached_embedding_model = "models/gemini-embedding-001"
-    return _cached_embedding_model
-
-def split_text_into_chunks(text: str, chunk_size: int = 700, overlap: int = 100) -> List[str]:
-    """Découpe un texte en morceaux en respectant les paragraphes et phrases."""
+def split_text_into_chunks(text: str, chunk_size: int = 650, overlap: int = 100) -> List[str]:
+    """Découpe un texte en morceaux sémantiques robustes sans boucle infinie."""
     if not text:
         return []
     
     cleaned_text = re.sub(r'\s+', ' ', text).strip()
-    
-    if len(cleaned_text) <= chunk_size:
+    text_len = len(cleaned_text)
+    if text_len <= chunk_size:
         return [cleaned_text]
         
     chunks = []
     start = 0
-    while start < len(cleaned_text):
-        end = start + chunk_size
-        if end >= len(cleaned_text):
-            chunks.append(cleaned_text[start:])
-            break
+    
+    while start < text_len:
+        end = min(start + chunk_size, text_len)
         
-        punctuation_match = re.search(r'[.!?;\n][^\.\!?;\n]*$', cleaned_text[start:end])
-        if punctuation_match:
-            end = start + punctuation_match.start() + 1
+        if end < text_len:
+            window = cleaned_text[max(start, end - 150):end]
+            last_punct = -1
+            for p in ['. ', '! ', '? ', '.\n', ';\n', '; ', ' - ']:
+                idx = window.rfind(p)
+                if idx > last_punct:
+                    last_punct = idx + len(p)
+            
+            if last_punct > 0:
+                end = max(start, end - 150) + last_punct
         
         chunk = cleaned_text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-        
-        start = end - overlap
-        
+            
+        next_start = end - overlap
+        if next_start <= start:
+            start = end
+        else:
+            start = next_start
+            
     return chunks
 
 def generate_embedding(text: str) -> List[float]:
@@ -71,49 +58,31 @@ def generate_embedding(text: str) -> List[float]:
     if not settings.GEMINI_API_KEY:
         return [0.0] * 768
 
-    model_name = get_best_embedding_model()
     try:
         response = genai.embed_content(
-            model=model_name,
+            model=settings.EMBEDDING_MODEL or "models/gemini-embedding-001",
             content=text,
             task_type="retrieval_document",
             output_dimensionality=768,
         )
         return response['embedding']
-    except Exception:
-        try:
-            response = genai.embed_content(
-                model=model_name,
-                content=text,
-                output_dimensionality=768,
-            )
-            return response['embedding']
-        except Exception as e:
-            logger.error(f"Erreur calcul embedding document ({model_name}): {e}")
-            return [0.0] * 768
+    except Exception as e:
+        logger.warning(f"Embedding document fallback: {e}")
+        return [0.0] * 768
 
 def generate_query_embedding(text: str) -> List[float]:
     """Calcule l'embedding vectoriel d'une requête utilisateur (768 dimensions)."""
     if not settings.GEMINI_API_KEY:
         return [0.0] * 768
 
-    model_name = get_best_embedding_model()
     try:
         response = genai.embed_content(
-            model=model_name,
+            model=settings.EMBEDDING_MODEL or "models/gemini-embedding-001",
             content=text,
             task_type="retrieval_query",
             output_dimensionality=768,
         )
         return response['embedding']
-    except Exception:
-        try:
-            response = genai.embed_content(
-                model=model_name,
-                content=text,
-                output_dimensionality=768,
-            )
-            return response['embedding']
-        except Exception as e:
-            logger.error(f"Erreur calcul embedding query ({model_name}): {e}")
-            return [0.0] * 768
+    except Exception as e:
+        logger.warning(f"Embedding query fallback: {e}")
+        return [0.0] * 768
