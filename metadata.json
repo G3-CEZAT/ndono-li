@@ -1,0 +1,8 @@
+{
+  "name": "Hadara Tidiane",
+  "description": "Plateforme spirituelle et d'enseignements authentiques sur Seydi El Hadji Malick Sy (RTA) — Hadara IA, Traités, Tasbîh, Gamou & Ziyâra.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
