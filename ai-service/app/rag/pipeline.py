@@ -23,8 +23,8 @@ def get_best_generative_model() -> str:
 
     try:
         available_models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # Préférer flash ou pro
-        preferred = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-pro"]
+        # Préférer gemini-3.6-flash ou gemini-flash-latest
+        preferred = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-pro-latest"]
         for p in preferred:
             if p in available_models or f"models/{p}" in available_models:
                 _cached_generative_model = p

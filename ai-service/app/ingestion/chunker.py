@@ -17,19 +17,23 @@ def get_best_embedding_model() -> str:
         return _cached_embedding_model
 
     if not settings.GEMINI_API_KEY:
-        return "models/embedding-001"
+        return "models/gemini-embedding-001"
 
-    candidates = [settings.EMBEDDING_MODEL, "models/embedding-001", "embedding-001", "models/text-embedding-004", "text-embedding-004"]
+    candidates = ["models/gemini-embedding-001", "models/gemini-embedding-2", "models/gemini-embedding-2-preview"]
     try:
         available_models = [m.name for m in genai.list_models() if 'embedContent' in m.supported_generation_methods]
+        for c in candidates:
+            if c in available_models:
+                _cached_embedding_model = c
+                logger.info(f"Modèle d'embedding Gemini sélectionné: {_cached_embedding_model}")
+                return _cached_embedding_model
         if available_models:
             _cached_embedding_model = available_models[0]
-            logger.info(f"Modèle d'embedding Gemini sélectionné: {_cached_embedding_model}")
             return _cached_embedding_model
     except Exception as e:
         logger.warning(f"Impossible de lister les modèles d'embedding: {e}")
 
-    _cached_embedding_model = candidates[0]
+    _cached_embedding_model = "models/gemini-embedding-001"
     return _cached_embedding_model
 
 def split_text_into_chunks(text: str, chunk_size: int = 700, overlap: int = 100) -> List[str]:
@@ -63,7 +67,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 700, overlap: int = 100)
     return chunks
 
 def generate_embedding(text: str) -> List[float]:
-    """Calcule l'embedding vectoriel d'un texte via Gemini."""
+    """Calcule l'embedding vectoriel d'un texte via Gemini (768 dimensions)."""
     if not settings.GEMINI_API_KEY:
         return [0.0] * 768
 
@@ -73,6 +77,7 @@ def generate_embedding(text: str) -> List[float]:
             model=model_name,
             content=text,
             task_type="retrieval_document",
+            output_dimensionality=768,
         )
         return response['embedding']
     except Exception:
@@ -80,6 +85,7 @@ def generate_embedding(text: str) -> List[float]:
             response = genai.embed_content(
                 model=model_name,
                 content=text,
+                output_dimensionality=768,
             )
             return response['embedding']
         except Exception as e:
@@ -87,7 +93,7 @@ def generate_embedding(text: str) -> List[float]:
             return [0.0] * 768
 
 def generate_query_embedding(text: str) -> List[float]:
-    """Calcule l'embedding vectoriel d'une requête utilisateur."""
+    """Calcule l'embedding vectoriel d'une requête utilisateur (768 dimensions)."""
     if not settings.GEMINI_API_KEY:
         return [0.0] * 768
 
@@ -97,6 +103,7 @@ def generate_query_embedding(text: str) -> List[float]:
             model=model_name,
             content=text,
             task_type="retrieval_query",
+            output_dimensionality=768,
         )
         return response['embedding']
     except Exception:
@@ -104,6 +111,7 @@ def generate_query_embedding(text: str) -> List[float]:
             response = genai.embed_content(
                 model=model_name,
                 content=text,
+                output_dimensionality=768,
             )
             return response['embedding']
         except Exception as e:
