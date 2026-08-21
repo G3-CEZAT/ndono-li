@@ -125,6 +125,57 @@ export class ScholarsService {
     };
   }
 
+  async uploadAudioTeaching(
+    scholarId: string,
+    title: string,
+    authorScholar: string,
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+  ) {
+    // 1. Créer le document dans la base
+    const document = await this.prisma.document.create({
+      data: {
+        title,
+        authorScholar,
+        type: 'AUDIO_TRANSCRIPT',
+        content: 'Transcription en cours...',
+        isPublished: true,
+        createdById: scholarId,
+      },
+    });
+
+    // 2. Envoyer au microservice IA pour transcription + chunking + indexation vectorielle
+    try {
+      const ingestResult = await this.aiClient.ingestAudio(
+        document.id,
+        title,
+        authorScholar,
+        fileBuffer,
+        fileName,
+        mimeType,
+      );
+
+      // 3. Mettre à jour le texte intégral transcrit dans la base relationnelle
+      const updatedDoc = await this.prisma.document.update({
+        where: { id: document.id },
+        data: {
+          content: ingestResult.fullTranscription || 'Audio transcrit et indexé.',
+        },
+      });
+
+      return {
+        message: 'Enseignement audio transcrit et indexé avec succès',
+        document: updatedDoc,
+        summary: ingestResult.transcriptionSummary,
+        chunksCount: ingestResult.chunksCount,
+      };
+    } catch (error) {
+      this.logger.error(`Erreur d'ingestion audio: ${error.message}`);
+      throw error;
+    }
+  }
+
   async discardQuestion(questionId: string) {
     const question = await this.prisma.unansweredQuestion.findUnique({
       where: { id: questionId },

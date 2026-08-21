@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { ScholarsService } from './scholars.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -25,6 +26,26 @@ export class ScholarsController {
     @Body() dto: CreateDocumentDto,
   ) {
     return this.scholarsService.createDocument(scholarId, dto);
+  }
+
+  @ApiOperation({ summary: 'Téléverser un enregistrement audio de sermon/enseignement (Transcription & Indexation automatique)' })
+  @ApiResponse({ status: 201, description: 'Audio transcrit et indexé dans le RAG' })
+  @Post('documents/upload-audio')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAudioTeaching(
+    @CurrentUser('id') scholarId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('title') title: string,
+    @Body('authorScholar') authorScholar: string,
+  ) {
+    return this.scholarsService.uploadAudioTeaching(
+      scholarId,
+      title,
+      authorScholar,
+      file.buffer,
+      file.originalname,
+      file.mimetype,
+    );
   }
 
   @ApiOperation({ summary: 'Lister tous les documents et statuts de publication' })

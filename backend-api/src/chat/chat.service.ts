@@ -188,6 +188,140 @@ export class ChatService {
     };
   }
 
+  async sendVoiceMessage(
+    userId: string,
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+    conversationId?: string,
+    languagePreference?: string,
+  ) {
+    // 1. Vérification du statut d'abonnement
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Utilisateur introuvable');
+    }
+
+    const isSubscribed = user.subscriptionExpiresAt
+      ? new Date(user.subscriptionExpiresAt) > new Date()
+      : false;
+
+    const isExempt = user.role === Role.ERUDIT || user.role === Role.ADMIN;
+
+    if (!isSubscribed && !isExempt) {
+      const userMessagesCount = await this.prisma.message.count({
+        where: {
+          conversation: { userId },
+          sender: 'USER',
+        },
+      });
+
+      if (userMessagesCount >= 3) {
+        throw new ForbiddenException(
+          'Votre abonnement à 500 FCFA/mois est requis pour continuer à poser des questions vocales.',
+        );
+      }
+    }
+
+    // 2. Récupérer ou créer la conversation
+    let convId = conversationId;
+    let conversation;
+
+    if (convId) {
+      conversation = await this.prisma.conversation.findFirst({
+        where: { id: convId, userId },
+      });
+      if (!conversation) {
+        throw new NotFoundException('Discussion introuvable');
+      }
+    } else {
+      conversation = await this.prisma.conversation.create({
+        data: {
+          userId,
+          title: 'Question Vocale',
+        },
+      });
+      convId = conversation.id;
+    }
+
+    // 3. Charger l'historique récent (6 derniers messages)
+    const recentMessages = await this.prisma.message.findMany({
+      where: { conversationId: convId },
+      orderBy: { createdAt: 'desc' },
+      take: 6,
+    });
+
+    const formattedHistory = recentMessages.reverse().map((msg) => ({
+      sender: msg.sender,
+      content: msg.content,
+    }));
+
+    // 4. Interroger le microservice RAG avec l'audio
+    const ragResult = await this.aiClient.askRagVoice(
+      fileBuffer,
+      fileName,
+      mimeType,
+      formattedHistory,
+      languagePreference,
+    );
+
+    const transcribedQuestion = ragResult.transcription || 'Question vocale enregistrée';
+
+    // 5. Enregistrer le message vocal de l'utilisateur
+    const userMessage = await this.prisma.message.create({
+      data: {
+        conversationId: convId,
+        sender: 'USER',
+        content: `[Vocal] ${transcribedQuestion}`,
+      },
+    });
+
+    // 6. Enregistrer la réponse certifiée de l'IA
+    const aiMessage = await this.prisma.message.create({
+      data: {
+        conversationId: convId,
+        sender: 'AI',
+        content: ragResult.answer,
+        sources: ragResult.sources.length > 0 ? (ragResult.sources as any) : null,
+      },
+    });
+
+    // 7. Enregistrer dans les questions orphelines si non trouvée
+    if (!ragResult.isFound) {
+      await this.prisma.unansweredQuestion.create({
+        data: {
+          rawQuestion: transcribedQuestion,
+          language: ragResult.detectedLanguage || 'fr',
+          status: 'PENDING',
+        },
+      });
+    }
+
+    // Mettre à jour le titre si c'était 'Question Vocale'
+    if (conversation && conversation.title === 'Question Vocale' && transcribedQuestion) {
+      const updatedTitle = transcribedQuestion.slice(0, 45) + (transcribedQuestion.length > 45 ? '...' : '');
+      await this.prisma.conversation.update({
+        where: { id: convId },
+        data: { title: updatedTitle, updatedAt: new Date() },
+      });
+    } else {
+      await this.prisma.conversation.update({
+        where: { id: convId },
+        data: { updatedAt: new Date() },
+      });
+    }
+
+    return {
+      conversationId: convId,
+      transcribedQuestion,
+      userMessage,
+      aiMessage,
+    };
+  }
+
   async deleteConversation(userId: string, conversationId: string) {
     const conversation = await this.prisma.conversation.findFirst({
       where: { id: conversationId, userId },

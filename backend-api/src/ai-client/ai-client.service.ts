@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import * as FormData from 'form-data';
 
 export interface RagResponse {
   answer: string;
@@ -13,6 +14,7 @@ export interface RagResponse {
     chunkContent: string;
   }>;
   detectedLanguage: string;
+  transcription?: string;
   unansweredLogged?: boolean;
 }
 
@@ -55,9 +57,54 @@ export class AiClientService {
       return response.data;
     } catch (error) {
       this.logger.error(`Erreur lors de l'appel au microservice IA: ${error.message}`, error.stack);
-      // Fallback sécurisé en cas d'indisponibilité momentanée du service IA
       return {
         answer: "Le service des enseignements certifiés est momentanément indisponible. Veuillez réessayer dans un instant.",
+        isFound: false,
+        sources: [],
+        detectedLanguage: 'fr',
+      };
+    }
+  }
+
+  async askRagVoice(
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+    history: Array<{ sender: string; content: string }> = [],
+    languagePreference?: string,
+  ): Promise<RagResponse> {
+    try {
+      const formData = new FormData();
+      formData.append('file', fileBuffer, {
+        filename: fileName,
+        contentType: mimeType,
+      });
+
+      if (history && history.length > 0) {
+        formData.append('history', JSON.stringify(history));
+      }
+      if (languagePreference) {
+        formData.append('languagePreference', languagePreference);
+      }
+
+      const response = await firstValueFrom(
+        this.httpService.post<RagResponse>(
+          `${this.aiServiceUrl}/rag/ask-voice`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'X-Internal-Secret': this.internalSecret,
+            },
+            timeout: 60000,
+          },
+        ),
+      );
+      return response.data;
+    } catch (error) {
+      this.logger.error(`Erreur lors du traitement de la note vocale: ${error.message}`, error.stack);
+      return {
+        answer: "Impossible de traiter la note vocale pour le moment. Veuillez réessayer.",
         isFound: false,
         sources: [],
         detectedLanguage: 'fr',
@@ -88,6 +135,44 @@ export class AiClientService {
       return response.data;
     } catch (error) {
       this.logger.error(`Erreur lors de l'ingestion du document vers l'IA: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async ingestAudio(
+    documentId: string,
+    title: string,
+    authorScholar: string,
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+  ) {
+    try {
+      const formData = new FormData();
+      formData.append('documentId', documentId);
+      formData.append('title', title);
+      formData.append('authorScholar', authorScholar);
+      formData.append('file', fileBuffer, {
+        filename: fileName,
+        contentType: mimeType,
+      });
+
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.aiServiceUrl}/ingest/audio`,
+          formData,
+          {
+            headers: {
+              ...formData.getHeaders(),
+              'X-Internal-Secret': this.internalSecret,
+            },
+            timeout: 120000,
+          },
+        ),
+      );
+      return response.data;
+    } catch (error) {
+      this.logger.error(`Erreur lors de l'ingestion audio vers l'IA: ${error.message}`);
       throw error;
     }
   }
