@@ -1,7 +1,9 @@
+import re
 import logging
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.config import settings
 from app.models import DocumentChunkModel
 from app.ingestion.chunker import generate_query_embedding
@@ -19,16 +21,14 @@ def get_best_generative_model() -> str:
         return _cached_generative_model
 
     if not settings.GEMINI_API_KEY:
-        return "gemini-1.5-flash"
+        return "gemini-3.6-flash"
 
     try:
         available_models = [m.name.replace("models/", "") for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        # Préférer gemini-3.6-flash ou gemini-flash-latest
         preferred = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-pro-latest"]
         for p in preferred:
             if p in available_models or f"models/{p}" in available_models:
                 _cached_generative_model = p
-                logger.info(f"Modèle génératif Gemini sélectionné: {_cached_generative_model}")
                 return _cached_generative_model
         if available_models:
             _cached_generative_model = available_models[0]
@@ -43,72 +43,87 @@ SYSTEM_PROMPT = """Tu es l'assistant officiel de la plateforme CEZAT, dédié à
 
 RÈGLES STRICTES ET NON NÉGOCIABLES :
 1. Tu dois te baser EXCLUSIVEMENT sur les extraits de sources fournies par les érudits (ci-dessous).
-2. Si les sources fournies ne contiennent pas explicitement la réponse, tu ne dois JAMAIS inventer de règle religieuse, de fatwa ou de récit. Tu dois clairement l'admettre avec humilité.
+2. Si les sources fournies ne contiennent pas la réponse, tu ne dois JAMAIS inventer de règle religieuse ou de récit. Tu dois clairement l'admettre avec humilité.
 3. Si la question est posée en Wolof (ou que l'utilisateur a demandé du Wolof), réponds dans un Wolof respectueux, fluide, digne et compréhensible.
 4. Si la question est posée en Français, réponds dans un Français soigné, clair et accessible.
 5. Mentionne toujours la source ou le nom de l'érudit mentionné dans les textes.
 """
 
-def analyze_and_expand_query(question: str) -> Dict[str, str]:
-    """Analyse la langue de la question et génère une reformulation pour optimiser la recherche vectorielle."""
-    if not settings.GEMINI_API_KEY:
-        return {"expanded_query": question, "detected_language": "fr"}
+def detect_language_fast(text: str) -> str:
+    """Détection ultra-rapide Wolof vs Français basée sur les marqueurs fréquents."""
+    wolof_markers = [
+        "naka", "ndax", "amul", "war", "julli", "diine", "ndigël", "bamba", "serigne",
+        "dara", "rek", "rekk", "ñu", "nga", "sama", "sunu", "yoon", "ci", "ak", "bi", "gi", "wi", "yi", "mi"
+    ]
+    words = [w.lower() for w in re.findall(r'\b\w+\b', text)]
+    wolof_count = sum(1 for w in words if w in wolof_markers)
+    return "wo" if wolof_count >= 2 or (len(words) <= 3 and wolof_count >= 1) else "fr"
 
-    try:
-        model_name = get_best_generative_model()
-        model = genai.GenerativeModel(model_name)
-        prompt = f"""Analyse cette question d'un fidèle : "{question}".
-Tâche :
-1. Détecte la langue principale (français = 'fr', wolof = 'wo').
-2. Reformule la question en français standardisé avec les termes islamiques/spirituels précis (en arabe ou français) pour une recherche dans une base documentaire religieuse.
-
-Réponds sous le format exact :
-LANG: <fr ou wo>
-QUERY: <question reformulée en français>"""
-
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        
-        detected_lang = "fr"
-        expanded_query = question
-
-        for line in text.splitlines():
-            if line.startswith("LANG:"):
-                detected_lang = line.replace("LANG:", "").strip().lower()
-            elif line.startswith("QUERY:"):
-                expanded_query = line.replace("QUERY:", "").strip()
-
-        return {"expanded_query": expanded_query, "detected_language": detected_lang}
-    except Exception as e:
-        logger.error(f"Erreur reformulation query: {e}")
-        return {"expanded_query": question, "detected_language": "fr"}
-
-def search_similar_chunks(db: Session, query: str, top_k: int = 4) -> List[Dict[str, Any]]:
-    """Recherche les chunks les plus similaires dans PostgreSQL avec pgvector."""
-    query_vector = generate_query_embedding(query)
+def search_hybrid_chunks(db: Session, raw_query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    """
+    Recherche hybride haute performance :
+    1. Recherche sémantique vectorielle via gemini-embedding-001.
+    2. Correspondance textuelle directe par mots-clés.
+    """
+    query_vector = generate_query_embedding(raw_query)
     
-    chunks = (
+    # 1. Recherche vectorielle pgvector
+    vector_chunks = (
         db.query(
             DocumentChunkModel,
             (1 - DocumentChunkModel.embedding.cosine_distance(query_vector)).label("similarity")
         )
         .order_by(DocumentChunkModel.embedding.cosine_distance(query_vector))
-        .limit(top_k)
+        .limit(top_k * 2)
         .all()
     )
 
-    results = []
-    for chunk, similarity in chunks:
-        score = float(similarity)
-        results.append({
+    keywords = [w.lower() for w in re.findall(r'\b\w{3,}\b', raw_query)]
+    results_map: Dict[str, Dict[str, Any]] = {}
+
+    for chunk, similarity in vector_chunks:
+        try:
+            score = float(similarity)
+            if score != score:  # NaN check
+                score = 0.0
+        except Exception:
+            score = 0.0
+
+        # Boost de score si présence de mots-clés dans le titre ou contenu
+        content_lower = chunk.content.lower()
+        title_lower = chunk.title.lower()
+        keyword_hits = sum(1 for kw in keywords if kw in content_lower or kw in title_lower)
+        if keyword_hits > 0:
+            score = min(1.0, score + (0.15 * keyword_hits))
+
+        results_map[chunk.id] = {
             "id": chunk.id,
             "document_id": chunk.document_id,
             "title": chunk.title,
             "author_scholar": chunk.author_scholar,
             "content": chunk.content,
             "score": score
-        })
-    return results
+        }
+
+    # 2. Recherche textuelle directe pour les mots-clés spécifiques
+    if keywords:
+        search_filters = [DocumentChunkModel.content.ilike(f"%{kw}%") for kw in keywords]
+        search_filters += [DocumentChunkModel.title.ilike(f"%{kw}%") for kw in keywords]
+        keyword_chunks = db.query(DocumentChunkModel).filter(or_(*search_filters)).limit(top_k).all()
+
+        for chunk in keyword_chunks:
+            if chunk.id not in results_map:
+                results_map[chunk.id] = {
+                    "id": chunk.id,
+                    "document_id": chunk.document_id,
+                    "title": chunk.title,
+                    "author_scholar": chunk.author_scholar,
+                    "content": chunk.content,
+                    "score": 0.78
+                }
+
+    sorted_results = sorted(results_map.values(), key=lambda x: x["score"], reverse=True)
+    return sorted_results[:top_k]
 
 def run_rag_pipeline(
     db: Session,
@@ -116,22 +131,18 @@ def run_rag_pipeline(
     history: List[Dict[str, str]] = [],
     language_preference: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Pipeline RAG complet avec gestion Wolof/FR, recherche pgvector et garde-fous stricts."""
+    """Pipeline RAG ultra-rapide et certifié avec recherche hybride."""
     
-    # 1. Analyse de la question et reformulation
-    analysis = analyze_and_expand_query(question)
-    detected_lang = language_preference or analysis.get("detected_language", "fr")
-    expanded_query = analysis.get("expanded_query", question)
+    detected_lang = language_preference or detect_language_fast(question)
 
-    # 2. Recherche vectorielle dans la base des érudits
-    chunks = search_similar_chunks(db, expanded_query, top_k=4)
+    # 1. Recherche hybride immédiate dans pgvector
+    chunks = search_hybrid_chunks(db, raw_query=question, top_k=4)
 
-    # 3. Filtrage par seuil de similarité stricte
-    threshold = settings.SIMILARITY_THRESHOLD
+    # 2. Seuil de similarité
+    threshold = 0.50
     relevant_chunks = [c for c in chunks if c["score"] >= threshold]
 
     if not relevant_chunks:
-        # Aucune source certifiée trouvée
         if detected_lang == "wo":
             fallback_msg = "Laaj bii amagul tontu bu wér ci jàngale yi ñu yore te érudits yi gëstu ko. Yónnee nañu ko komite bi ngir ñu leeral ko ci kanam."
         else:
@@ -144,12 +155,11 @@ def run_rag_pipeline(
             "detectedLanguage": detected_lang,
         }
 
-    # 4. Construction du contexte certifié pour Gemini
+    # 3. Construction du prompt certifié
     context_text = ""
     for i, c in enumerate(relevant_chunks, 1):
         context_text += f"\n--- SOURCE {i} : {c['title']} (Auteur/Érudit: {c['author_scholar']}) ---\n{c['content']}\n"
 
-    # Construction de l'historique de conversation récent
     history_context = ""
     if history:
         history_context = "Historique récent de la discussion :\n"
@@ -167,7 +177,7 @@ SOURCES CERTIFIÉES DES ÉRUDITS :
 QUESTION DU PÈLERIN : {question}
 LANGUE DE RÉPONSE REQUISE : {'Wolof' if detected_lang == 'wo' else 'Français'}
 
-Formule ta réponse certifiée avec bienveillance, en citant les sources et érudits pertinents."""
+Formule ta réponse certifiée avec bienveillance et clarté, en citant les sources et érudits pertinents."""
 
     if not settings.GEMINI_API_KEY:
         sample_source = relevant_chunks[0]

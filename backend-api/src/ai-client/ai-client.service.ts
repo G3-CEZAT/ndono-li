@@ -50,7 +50,7 @@ export class AiClientService {
             headers: {
               'X-Internal-Secret': this.internalSecret,
             },
-            timeout: 30000,
+            timeout: 90000,
           },
         ),
       );
